@@ -1,5 +1,10 @@
 # Prom-Verifier: Prometheus Alert Backtesting Tool
 
+[![CI](https://github.com/kooltuoehias/prom-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/kooltuoehias/prom-verifier/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/kooltuoehias/prom-verifier/branch/main/graph/badge.svg)](https://codecov.io/gh/kooltuoehias/prom-verifier)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/kooltuoehias/prom-verifier)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Prom-Verifier** is a CLI tool designed to "Time Travel" and verify your Prometheus alerting rules against historical data.
 
 It allows Site Reliability Engineers (SREs) to replay alert logic against past metrics to ensure that new alerts would have fired correctly (or to debug why an alert didn't fire), without needing to wait for a real outage.
@@ -21,7 +26,7 @@ You **must** have direct network access to the Prometheus HTTP API (typically po
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/prom-verifier.git
+git clone https://github.com/kooltuoehias/prom-verifier.git
 cd prom-verifier
 
 # Build the binary

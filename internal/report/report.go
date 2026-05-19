@@ -12,61 +12,112 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// AlertState matches engine definition to avoid circular import if possible,
-// or we can move types to a 'types' package. For now, we will duplicate or import if we move engine types.
-// Better approach: Let's assume engine imports report, or report imports engine types?
-// Engine depends on report to call AddResult. So report cannot depend on engine.
-// We should define types in report or a shared package.
-// For simplicity, let's redefine necessary types here or make them generic interface{} but that's ugly.
-// Let's creating a simple 'types' package is overkill.
-// We will accept basic types here to decouple.
+const (
+	colorReset      = "\033[0m"
+	colorBold       = "\033[1m"
+	colorDim        = "\033[2m"
+	colorBoldRed    = "\033[1;31m"
+	colorBoldYellow = "\033[1;33m"
+	colorGreen      = "\033[32m"
+)
+
+func isTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
 
 type Result struct {
-	RuleName    string            `json:"rule_name" yaml:"rule_name"`
+	Group       string            `json:"group" yaml:"group"`
 	Alert       string            `json:"alert" yaml:"alert"`
 	Metric      string            `json:"metric" yaml:"metric"`
 	Duration    time.Duration     `json:"duration" yaml:"duration"`
 	State       string            `json:"state" yaml:"state"`
-	Annotations map[string]string `json:"annotations,omitempty" yaml:"annotations,omitempty"` // Added
+	Annotations map[string]string `json:"annotations,omitempty" yaml:"annotations,omitempty"`
 }
 
 type Reporter interface {
+	StartGroup(name string)
 	AddResult(rule config.Rule, metric model.Metric, duration time.Duration, state string, annotations map[string]string)
 	Flush() error
 }
 
-// TextReporter prints to stdout immediately (Legacy behavior)
-type TextReporter struct{}
+// TextReporter streams results to stdout with colors and a final summary.
+type TextReporter struct {
+	useColor bool
+	counts   map[string]int
+	started  bool
+}
+
+func newTextReporter() *TextReporter {
+	return &TextReporter{
+		useColor: isTerminal(),
+		counts:   map[string]int{"FIRING": 0, "PENDING": 0, "SILENT": 0},
+	}
+}
+
+func (t *TextReporter) c(s, code string) string {
+	if t.useColor {
+		return code + s + colorReset
+	}
+	return s
+}
+
+func (t *TextReporter) StartGroup(name string) {
+	if !t.started {
+		fmt.Println("\n─────────────────── Results ───────────────────")
+		t.started = true
+	}
+	fmt.Printf("\n▶ %s\n", t.c(name, colorBold))
+}
 
 func (t *TextReporter) AddResult(rule config.Rule, metric model.Metric, duration time.Duration, state string, annotations map[string]string) {
-	// We can try to mimic the old output grouping, but for now linear output is fine
-	// actually the old one grouped by rule.
-	// The engine loop drives this. If we print immediately, we get the same behavior.
-	if state == "FIRING" {
-		fmt.Printf("      🔥 FIRING! [%s] (Duration: %s)\n", metric, duration)
-		// Print annotations
+	t.counts[state]++
+	fmt.Printf("  %s\n", t.c(rule.Alert, colorBold))
+	switch state {
+	case "FIRING":
+		fmt.Printf("    %s  %s  duration=%s\n",
+			t.c("🔥 FIRING", colorBoldRed),
+			t.c(metric.String(), colorDim),
+			duration.Round(time.Second))
 		for k, v := range annotations {
-			fmt.Printf("          - %s: %s\n", k, v)
+			fmt.Printf("    %s %s\n", t.c(k+":", colorDim), v)
 		}
-	} else if state == "SILENT" {
-		fmt.Println("      ✅ Status: SILENT")
-	} else {
-		fmt.Printf("      ⚠️ PENDING... [%s] (Duration: %s)\n", metric, duration)
+	case "SILENT":
+		fmt.Printf("    %s\n", t.c("✅ SILENT", colorGreen))
+	default:
+		fmt.Printf("    %s  %s  duration=%s\n",
+			t.c("⚠️  PENDING", colorBoldYellow),
+			t.c(metric.String(), colorDim),
+			duration.Round(time.Second))
 	}
 }
 
 func (t *TextReporter) Flush() error {
+	total := t.counts["FIRING"] + t.counts["PENDING"] + t.counts["SILENT"]
+	fmt.Println("\n───────────────────────────────────────────────")
+	fmt.Printf("Summary: %d evaluated  •  %s  •  %s  •  %s\n",
+		total,
+		t.c(fmt.Sprintf("🔥 %d firing", t.counts["FIRING"]), colorBoldRed),
+		t.c(fmt.Sprintf("⚠️  %d pending", t.counts["PENDING"]), colorBoldYellow),
+		t.c(fmt.Sprintf("✅ %d silent", t.counts["SILENT"]), colorGreen),
+	)
 	return nil
 }
 
-// JSONReporter collects results and prints JSON at the end
+// JSONReporter collects results and writes JSON on Flush.
 type JSONReporter struct {
-	Results []Result
+	Results      []Result
+	currentGroup string
 }
+
+func (j *JSONReporter) StartGroup(name string) { j.currentGroup = name }
 
 func (j *JSONReporter) AddResult(rule config.Rule, metric model.Metric, duration time.Duration, state string, annotations map[string]string) {
 	j.Results = append(j.Results, Result{
-		RuleName:    rule.Alert, // Or Group Name? Rule has Alert field.
+		Group:       j.currentGroup,
 		Alert:       rule.Alert,
 		Metric:      metric.String(),
 		Duration:    duration,
@@ -81,14 +132,17 @@ func (j *JSONReporter) Flush() error {
 	return enc.Encode(j.Results)
 }
 
-// YAMLReporter collects results and prints YAML at the end
+// YAMLReporter collects results and writes YAML on Flush.
 type YAMLReporter struct {
-	Results []Result
+	Results      []Result
+	currentGroup string
 }
+
+func (y *YAMLReporter) StartGroup(name string) { y.currentGroup = name }
 
 func (y *YAMLReporter) AddResult(rule config.Rule, metric model.Metric, duration time.Duration, state string, annotations map[string]string) {
 	y.Results = append(y.Results, Result{
-		RuleName:    rule.Alert,
+		Group:       y.currentGroup,
 		Alert:       rule.Alert,
 		Metric:      metric.String(),
 		Duration:    duration,
@@ -102,7 +156,6 @@ func (y *YAMLReporter) Flush() error {
 	return enc.Encode(y.Results)
 }
 
-// Factory
 func New(format string) Reporter {
 	switch format {
 	case "json":
@@ -110,6 +163,6 @@ func New(format string) Reporter {
 	case "yaml":
 		return &YAMLReporter{Results: []Result{}}
 	default:
-		return &TextReporter{}
+		return newTextReporter()
 	}
 }
